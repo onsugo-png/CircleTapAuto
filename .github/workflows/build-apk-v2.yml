@@ -1,0 +1,146 @@
+name: Build CircleTapAuto APK v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-apk-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate v1 Android project
+        shell: bash
+        run: |
+          set -e
+          awk '
+            /- name: Generate Android project/ { in_step=1; next }
+            in_step && /run: \|/ { in_run=1; next }
+            in_run && /^      - name:/ { exit }
+            in_run { sub(/^          /, ""); print }
+          ' .github/workflows/build-apk.yml > /tmp/generate-project.sh
+          bash /tmp/generate-project.sh
+
+      - name: Patch detector to v2 ring sampling
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt')
+          s = p.read_text()
+
+          start = s.index('    private fun detectAndTap(image: Image) {')
+          end = s.index('    private fun isYellow(', start)
+
+          new_block = r'''    private fun detectAndTap(image: Image) {
+        val width = image.width
+        val height = image.height
+        val plane = image.planes.firstOrNull() ?: return
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+
+        val cx = (width * 0.50f).toInt()
+        val cy = (height * 0.507f).toInt()
+
+        // v2: 넓은 영역 전체가 아니라 바깥 원 테두리 근처만 검사한다.
+        val radius = (width * 0.255f).toInt()
+        val patch = max(3, width / 180)
+
+        val diag = (radius * 0.707f).toInt()
+        val points = arrayOf(
+            intArrayOf(cx, cy - radius),
+            intArrayOf(cx, cy + radius),
+            intArrayOf(cx - radius, cy),
+            intArrayOf(cx + radius, cy),
+            intArrayOf(cx - diag, cy - diag),
+            intArrayOf(cx + diag, cy - diag),
+            intArrayOf(cx - diag, cy + diag),
+            intArrayOf(cx + diag, cy + diag)
+        )
+
+        var yellowPoints = 0
+        for (pt in points) {
+            var hits = 0
+            var dy = -patch
+            while (dy <= patch) {
+                var dx = -patch
+                while (dx <= patch) {
+                    val x = pt[0] + dx
+                    val y = pt[1] + dy
+                    if (x in 0 until width && y in 0 until height &&
+                        isYellow(buffer, rowStride, pixelStride, x, y)) {
+                        hits++
+                    }
+                    dx += 2
+                }
+                dy += 2
+            }
+            if (hits >= POINT_YELLOW_HITS) yellowPoints++
+        }
+
+        val yellowNow = yellowPoints >= REQUIRED_YELLOW_POINTS
+        val now = SystemClock.elapsedRealtime()
+
+        if (yellowNow && !yellowLatched && now - lastTapAt >= TAP_COOLDOWN_MS) {
+            if (AutoTapAccessibilityService.tapScreen(cx.toFloat(), cy.toFloat())) {
+                lastTapAt = now
+                yellowLatched = true
+            }
+        } else if (!yellowNow) {
+            yellowLatched = false
+        }
+    }
+
+'''
+
+          s = s[:start] + new_block + s[end:]
+          s = s.replace(
+              'private const val YELLOW_PIXEL_THRESHOLD = 18\n                  private const val TAP_COOLDOWN_MS = 180L',
+              'private const val REQUIRED_YELLOW_POINTS = 3\n                  private const val POINT_YELLOW_HITS = 4\n                  private const val TAP_COOLDOWN_MS = 120L'
+          )
+          p.write_text(s)
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Copy APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CircleTapAuto-v2.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CircleTapAuto-v2-APK
+          path: CircleTapAuto-v2.apk
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v2-build-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" CircleTapAuto-v2.apk --title "CircleTapAuto v2 build ${GITHUB_RUN_NUMBER}" --notes "v2: 바깥 원 테두리 8지점 동시 노랑 감지 방식으로 오탐을 줄인 빌드입니다." --latest
