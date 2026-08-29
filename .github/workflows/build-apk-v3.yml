@@ -1,0 +1,73 @@
+name: Build CircleTapAuto APK v3 FAST
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-apk-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate v1 Android project
+        shell: bash
+        run: |
+          set -e
+          awk '
+            /- name: Generate Android project/ { in_step=1; next }
+            in_step && /run: \|/ { in_run=1; next }
+            in_run && /^      - name:/ { exit }
+            in_run { sub(/^          /, ""); print }
+          ' .github/workflows/build-apk.yml > /tmp/generate-project.sh
+          bash /tmp/generate-project.sh
+
+      - name: Patch detector to v3 fast mode
+        shell: bash
+        run: |
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwID0gUGF0aCgiYXBwL3NyYy9tYWluL2phdmEvY29tL2V4YW1wbGUvY2lyY2xldGFwYXV0by9TY3JlZW5DYXB0dXJlU2VydmljZS5rdCIpCnMgPSBwLnJlYWRfdGV4dCgpCgpzdGFydCA9IHMuaW5kZXgoIiAgICBwcml2YXRlIGZ1biBkZXRlY3RBbmRUYXAoaW1hZ2U6IEltYWdlKSB7IikKZW5kID0gcy5pbmRleCgiICAgIHByaXZhdGUgZnVuIGlzWWVsbG93KCIsIHN0YXJ0KQoKbmV3X2Jsb2NrID0gIiIiICAgIHByaXZhdGUgZnVuIGRldGVjdEFuZFRhcChpbWFnZTogSW1hZ2UpIHsKICAgICAgICB2YWwgd2lkdGggPSBpbWFnZS53aWR0aAogICAgICAgIHZhbCBoZWlnaHQgPSBpbWFnZS5oZWlnaHQKICAgICAgICB2YWwgcGxhbmUgPSBpbWFnZS5wbGFuZXMuZmlyc3RPck51bGwoKSA/OiByZXR1cm4KICAgICAgICB2YWwgYnVmZmVyID0gcGxhbmUuYnVmZmVyCiAgICAgICAgdmFsIHBpeGVsU3RyaWRlID0gcGxhbmUucGl4ZWxTdHJpZGUKICAgICAgICB2YWwgcm93U3RyaWRlID0gcGxhbmUucm93U3RyaWRlCgogICAgICAgIHZhbCBjeCA9ICh3aWR0aCAqIDAuNTBmKS50b0ludCgpCiAgICAgICAgdmFsIGN5ID0gKGhlaWdodCAqIDAuNTA3ZikudG9JbnQoKQoKICAgICAgICAvLyB2MyBGQVNUOgogICAgICAgIC8vIHYy7LKY65+8IO2VnCDrsJjsp4DrpoTsl5DshJwgM+yngOygkOydhCDquLDri6Trpqzsp4Ag7JWK6rOgLAogICAgICAgIC8vIOuwlOq5pSDsm5Ag7JWI7Kq9fu2FjOuRkOumrOydmCDsl6zrn6wg67CY7KeA66aE7J2EIOuPmeyLnOyXkCDruaDrpbTqsowg6rKA7IKs7ZWc64ukLgogICAgICAgIHZhbCBiYXNlUmFkaXVzID0gKHdpZHRoICogMC4yNTVmKS50b0ludCgpCiAgICAgICAgdmFsIHJhZGlpID0gaW50QXJyYXlPZigKICAgICAgICAgICAgKGJhc2VSYWRpdXMgKiAwLjkwZikudG9JbnQoKSwKICAgICAgICAgICAgKGJhc2VSYWRpdXMgKiAwLjk0ZikudG9JbnQoKSwKICAgICAgICAgICAgKGJhc2VSYWRpdXMgKiAwLjk4ZikudG9JbnQoKSwKICAgICAgICAgICAgKGJhc2VSYWRpdXMgKiAxLjAyZikudG9JbnQoKQogICAgICAgICkKCiAgICAgICAgdmFsIHBhdGNoID0gbWF4KDIsIHdpZHRoIC8gMjQwKQogICAgICAgIHZhbCBwb2ludFllbGxvd0hpdHMgPSAyCiAgICAgICAgdmFsIHJlcXVpcmVkWWVsbG93UG9pbnRzID0gMgogICAgICAgIHZhbCB0YXBDb29sZG93bk1zID0gNzVMCgogICAgICAgIHZhciB5ZWxsb3dQb2ludHMgPSAwCgogICAgICAgIG91dGVyQCBmb3IgKHJhZGl1cyBpbiByYWRpaSkgewogICAgICAgICAgICB2YWwgZGlhZyA9IChyYWRpdXMgKiAwLjcwN2YpLnRvSW50KCkKICAgICAgICAgICAgdmFsIHBvaW50cyA9IGFycmF5T2YoCiAgICAgICAgICAgICAgICBpbnRBcnJheU9mKGN4LCBjeSAtIHJhZGl1cyksCiAgICAgICAgICAgICAgICBpbnRBcnJheU9mKGN4ICsgZGlhZywgY3kgLSBkaWFnKSwKICAgICAgICAgICAgICAgIGludEFycmF5T2YoY3ggKyByYWRpdXMsIGN5KSwKICAgICAgICAgICAgICAgIGludEFycmF5T2YoY3ggKyBkaWFnLCBjeSArIGRpYWcpLAogICAgICAgICAgICAgICAgaW50QXJyYXlPZihjeCwgY3kgKyByYWRpdXMpLAogICAgICAgICAgICAgICAgaW50QXJyYXlPZihjeCAtIGRpYWcsIGN5ICsgZGlhZyksCiAgICAgICAgICAgICAgICBpbnRBcnJheU9mKGN4IC0gcmFkaXVzLCBjeSksCiAgICAgICAgICAgICAgICBpbnRBcnJheU9mKGN4IC0gZGlhZywgY3kgLSBkaWFnKQogICAgICAgICAgICApCgogICAgICAgICAgICBmb3IgKHB0IGluIHBvaW50cykgewogICAgICAgICAgICAgICAgdmFyIGhpdHMgPSAwCiAgICAgICAgICAgICAgICB2YXIgZHkgPSAtcGF0Y2gKICAgICAgICAgICAgICAgIHdoaWxlIChkeSA8PSBwYXRjaCkgewogICAgICAgICAgICAgICAgICAgIHZhciBkeCA9IC1wYXRjaAogICAgICAgICAgICAgICAgICAgIHdoaWxlIChkeCA8PSBwYXRjaCkgewogICAgICAgICAgICAgICAgICAgICAgICB2YWwgeCA9IHB0WzBdICsgZHgKICAgICAgICAgICAgICAgICAgICAgICAgdmFsIHkgPSBwdFsxXSArIGR5CiAgICAgICAgICAgICAgICAgICAgICAgIGlmICh4IGluIDAgdW50aWwgd2lkdGggJiYgeSBpbiAwIHVudGlsIGhlaWdodCAmJgogICAgICAgICAgICAgICAgICAgICAgICAgICAgaXNZZWxsb3coYnVmZmVyLCByb3dTdHJpZGUsIHBpeGVsU3RyaWRlLCB4LCB5KSkgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgaGl0cysrCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBpZiAoaGl0cyA+PSBwb2ludFllbGxvd0hpdHMpIGJyZWFrCiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgZHggKz0gMgogICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICBpZiAoaGl0cyA+PSBwb2ludFllbGxvd0hpdHMpIGJyZWFrCiAgICAgICAgICAgICAgICAgICAgZHkgKz0gMgogICAgICAgICAgICAgICAgfQoKICAgICAgICAgICAgICAgIGlmIChoaXRzID49IHBvaW50WWVsbG93SGl0cykgewogICAgICAgICAgICAgICAgICAgIHllbGxvd1BvaW50cysrCiAgICAgICAgICAgICAgICAgICAgaWYgKHllbGxvd1BvaW50cyA+PSByZXF1aXJlZFllbGxvd1BvaW50cykgYnJlYWtAb3V0ZXIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgIH0KCiAgICAgICAgdmFsIHllbGxvd05vdyA9IHllbGxvd1BvaW50cyA+PSByZXF1aXJlZFllbGxvd1BvaW50cwogICAgICAgIHZhbCBub3cgPSBTeXN0ZW1DbG9jay5lbGFwc2VkUmVhbHRpbWUoKQoKICAgICAgICBpZiAoeWVsbG93Tm93ICYmICF5ZWxsb3dMYXRjaGVkICYmIG5vdyAtIGxhc3RUYXBBdCA+PSB0YXBDb29sZG93bk1zKSB7CiAgICAgICAgICAgIGlmIChBdXRvVGFwQWNjZXNzaWJpbGl0eVNlcnZpY2UudGFwU2NyZWVuKGN4LnRvRmxvYXQoKSwgY3kudG9GbG9hdCgpKSkgewogICAgICAgICAgICAgICAgbGFzdFRhcEF0ID0gbm93CiAgICAgICAgICAgICAgICB5ZWxsb3dMYXRjaGVkID0gdHJ1ZQogICAgICAgICAgICB9CiAgICAgICAgfSBlbHNlIGlmICgheWVsbG93Tm93KSB7CiAgICAgICAgICAgIHllbGxvd0xhdGNoZWQgPSBmYWxzZQogICAgICAgIH0KICAgIH0KCiIiIgoKcyA9IHNbOnN0YXJ0XSArIG5ld19ibG9jayArIHNbZW5kOl0KcC53cml0ZV90ZXh0KHMp' | base64 -d > /tmp/patch_v3.py
+          python /tmp/patch_v3.py
+          grep -n "v3 FAST\|radii =\|requiredYellowPoints\|tapCooldownMs" app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Copy APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CircleTapAuto-v3-FAST.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CircleTapAuto-v3-FAST-APK
+          path: CircleTapAuto-v3-FAST.apk
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v3-fast-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" CircleTapAuto-v3-FAST.apk --title "CircleTapAuto v3 FAST ${GITHUB_RUN_NUMBER}" --notes "v3 FAST: 4개 반지름 x 8지점 선행 감지, 2지점 노랑이면 즉시 탭, 75ms 쿨다운" --latest
