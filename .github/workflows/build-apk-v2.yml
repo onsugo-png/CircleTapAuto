@@ -30,84 +30,10 @@ jobs:
           bash /tmp/generate-project.sh
 
       - name: Patch detector to v2 ring sampling
-        shell: python
+        shell: bash
         run: |
-          from pathlib import Path
-
-          p = Path('app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt')
-          s = p.read_text()
-
-          start = s.index('    private fun detectAndTap(image: Image) {')
-          end = s.index('    private fun isYellow(', start)
-
-          new_block = r'''    private fun detectAndTap(image: Image) {
-        val width = image.width
-        val height = image.height
-        val plane = image.planes.firstOrNull() ?: return
-        val buffer = plane.buffer
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
-
-        val cx = (width * 0.50f).toInt()
-        val cy = (height * 0.507f).toInt()
-
-        // v2: 넓은 영역 전체가 아니라 바깥 원 테두리 근처만 검사한다.
-        val radius = (width * 0.255f).toInt()
-        val patch = max(3, width / 180)
-
-        val diag = (radius * 0.707f).toInt()
-        val points = arrayOf(
-            intArrayOf(cx, cy - radius),
-            intArrayOf(cx, cy + radius),
-            intArrayOf(cx - radius, cy),
-            intArrayOf(cx + radius, cy),
-            intArrayOf(cx - diag, cy - diag),
-            intArrayOf(cx + diag, cy - diag),
-            intArrayOf(cx - diag, cy + diag),
-            intArrayOf(cx + diag, cy + diag)
-        )
-
-        var yellowPoints = 0
-        for (pt in points) {
-            var hits = 0
-            var dy = -patch
-            while (dy <= patch) {
-                var dx = -patch
-                while (dx <= patch) {
-                    val x = pt[0] + dx
-                    val y = pt[1] + dy
-                    if (x in 0 until width && y in 0 until height &&
-                        isYellow(buffer, rowStride, pixelStride, x, y)) {
-                        hits++
-                    }
-                    dx += 2
-                }
-                dy += 2
-            }
-            if (hits >= POINT_YELLOW_HITS) yellowPoints++
-        }
-
-        val yellowNow = yellowPoints >= REQUIRED_YELLOW_POINTS
-        val now = SystemClock.elapsedRealtime()
-
-        if (yellowNow && !yellowLatched && now - lastTapAt >= TAP_COOLDOWN_MS) {
-            if (AutoTapAccessibilityService.tapScreen(cx.toFloat(), cy.toFloat())) {
-                lastTapAt = now
-                yellowLatched = true
-            }
-        } else if (!yellowNow) {
-            yellowLatched = false
-        }
-    }
-
-'''
-
-          s = s[:start] + new_block + s[end:]
-          s = s.replace(
-              'private const val YELLOW_PIXEL_THRESHOLD = 18\n                  private const val TAP_COOLDOWN_MS = 180L',
-              'private const val REQUIRED_YELLOW_POINTS = 3\n                  private const val POINT_YELLOW_HITS = 4\n                  private const val TAP_COOLDOWN_MS = 120L'
-          )
-          p.write_text(s)
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwID0gUGF0aCgiYXBwL3NyYy9tYWluL2phdmEvY29tL2V4YW1wbGUvY2lyY2xldGFwYXV0by9TY3JlZW5DYXB0dXJlU2VydmljZS5rdCIpCnMgPSBwLnJlYWRfdGV4dCgpCgpzdGFydCA9IHMuaW5kZXgoIiAgICBwcml2YXRlIGZ1biBkZXRlY3RBbmRUYXAoaW1hZ2U6IEltYWdlKSB7IikKZW5kID0gcy5pbmRleCgiICAgIHByaXZhdGUgZnVuIGlzWWVsbG93KCIsIHN0YXJ0KQoKbmV3X2Jsb2NrID0gIiIiICAgIHByaXZhdGUgZnVuIGRldGVjdEFuZFRhcChpbWFnZTogSW1hZ2UpIHsKICAgICAgICB2YWwgd2lkdGggPSBpbWFnZS53aWR0aAogICAgICAgIHZhbCBoZWlnaHQgPSBpbWFnZS5oZWlnaHQKICAgICAgICB2YWwgcGxhbmUgPSBpbWFnZS5wbGFuZXMuZmlyc3RPck51bGwoKSA/OiByZXR1cm4KICAgICAgICB2YWwgYnVmZmVyID0gcGxhbmUuYnVmZmVyCiAgICAgICAgdmFsIHBpeGVsU3RyaWRlID0gcGxhbmUucGl4ZWxTdHJpZGUKICAgICAgICB2YWwgcm93U3RyaWRlID0gcGxhbmUucm93U3RyaWRlCgogICAgICAgIHZhbCBjeCA9ICh3aWR0aCAqIDAuNTBmKS50b0ludCgpCiAgICAgICAgdmFsIGN5ID0gKGhlaWdodCAqIDAuNTA3ZikudG9JbnQoKQoKICAgICAgICAvLyB2Mjog7KCE7LK0IOyYgeyXreydtCDslYTri4jrnbwg67CU6rmlIOybkCDthYzrkZDrpqwg6re87LKYIDjsp4DsoJDrp4wg6rKA7IKsCiAgICAgICAgdmFsIHJhZGl1cyA9ICh3aWR0aCAqIDAuMjU1ZikudG9JbnQoKQogICAgICAgIHZhbCBwYXRjaCA9IG1heCgzLCB3aWR0aCAvIDE4MCkKICAgICAgICB2YWwgZGlhZyA9IChyYWRpdXMgKiAwLjcwN2YpLnRvSW50KCkKCiAgICAgICAgdmFsIHBvaW50cyA9IGFycmF5T2YoCiAgICAgICAgICAgIGludEFycmF5T2YoY3gsIGN5IC0gcmFkaXVzKSwKICAgICAgICAgICAgaW50QXJyYXlPZihjeCwgY3kgKyByYWRpdXMpLAogICAgICAgICAgICBpbnRBcnJheU9mKGN4IC0gcmFkaXVzLCBjeSksCiAgICAgICAgICAgIGludEFycmF5T2YoY3ggKyByYWRpdXMsIGN5KSwKICAgICAgICAgICAgaW50QXJyYXlPZihjeCAtIGRpYWcsIGN5IC0gZGlhZyksCiAgICAgICAgICAgIGludEFycmF5T2YoY3ggKyBkaWFnLCBjeSAtIGRpYWcpLAogICAgICAgICAgICBpbnRBcnJheU9mKGN4IC0gZGlhZywgY3kgKyBkaWFnKSwKICAgICAgICAgICAgaW50QXJyYXlPZihjeCArIGRpYWcsIGN5ICsgZGlhZykKICAgICAgICApCgogICAgICAgIHZhciB5ZWxsb3dQb2ludHMgPSAwCiAgICAgICAgZm9yIChwdCBpbiBwb2ludHMpIHsKICAgICAgICAgICAgdmFyIGhpdHMgPSAwCiAgICAgICAgICAgIHZhciBkeSA9IC1wYXRjaAogICAgICAgICAgICB3aGlsZSAoZHkgPD0gcGF0Y2gpIHsKICAgICAgICAgICAgICAgIHZhciBkeCA9IC1wYXRjaAogICAgICAgICAgICAgICAgd2hpbGUgKGR4IDw9IHBhdGNoKSB7CiAgICAgICAgICAgICAgICAgICAgdmFsIHggPSBwdFswXSArIGR4CiAgICAgICAgICAgICAgICAgICAgdmFsIHkgPSBwdFsxXSArIGR5CiAgICAgICAgICAgICAgICAgICAgaWYgKHggaW4gMCB1bnRpbCB3aWR0aCAmJiB5IGluIDAgdW50aWwgaGVpZ2h0ICYmCiAgICAgICAgICAgICAgICAgICAgICAgIGlzWWVsbG93KGJ1ZmZlciwgcm93U3RyaWRlLCBwaXhlbFN0cmlkZSwgeCwgeSkpIHsKICAgICAgICAgICAgICAgICAgICAgICAgaGl0cysrCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIGR4ICs9IDIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIGR5ICs9IDIKICAgICAgICAgICAgfQogICAgICAgICAgICBpZiAoaGl0cyA+PSBQT0lOVF9ZRUxMT1dfSElUUykgeWVsbG93UG9pbnRzKysKICAgICAgICB9CgogICAgICAgIHZhbCB5ZWxsb3dOb3cgPSB5ZWxsb3dQb2ludHMgPj0gUkVRVUlSRURfWUVMTE9XX1BPSU5UUwogICAgICAgIHZhbCBub3cgPSBTeXN0ZW1DbG9jay5lbGFwc2VkUmVhbHRpbWUoKQoKICAgICAgICBpZiAoeWVsbG93Tm93ICYmICF5ZWxsb3dMYXRjaGVkICYmIG5vdyAtIGxhc3RUYXBBdCA+PSBUQVBfQ09PTERPV05fTVMpIHsKICAgICAgICAgICAgaWYgKEF1dG9UYXBBY2Nlc3NpYmlsaXR5U2VydmljZS50YXBTY3JlZW4oY3gudG9GbG9hdCgpLCBjeS50b0Zsb2F0KCkpKSB7CiAgICAgICAgICAgICAgICBsYXN0VGFwQXQgPSBub3cKICAgICAgICAgICAgICAgIHllbGxvd0xhdGNoZWQgPSB0cnVlCiAgICAgICAgICAgIH0KICAgICAgICB9IGVsc2UgaWYgKCF5ZWxsb3dOb3cpIHsKICAgICAgICAgICAgeWVsbG93TGF0Y2hlZCA9IGZhbHNlCiAgICAgICAgfQogICAgfQoKIiIiCgpzID0gc1s6c3RhcnRdICsgbmV3X2Jsb2NrICsgc1tlbmQ6XQpzID0gcy5yZXBsYWNlKAogICAgInByaXZhdGUgY29uc3QgdmFsIFlFTExPV19QSVhFTF9USFJFU0hPTEQgPSAxOFxuICAgICAgICAgICAgICAgICAgcHJpdmF0ZSBjb25zdCB2YWwgVEFQX0NPT0xET1dOX01TID0gMTgwTCIsCiAgICAicHJpdmF0ZSBjb25zdCB2YWwgUkVRVUlSRURfWUVMTE9XX1BPSU5UUyA9IDNcbiAgICAgICAgICAgICAgICAgIHByaXZhdGUgY29uc3QgdmFsIFBPSU5UX1lFTExPV19ISVRTID0gNFxuICAgICAgICAgICAgICAgICAgcHJpdmF0ZSBjb25zdCB2YWwgVEFQX0NPT0xET1dOX01TID0gMTIwTCIKKQpwLndyaXRlX3RleHQocyk=' | base64 -d > /tmp/patch_v2.py
+          python /tmp/patch_v2.py
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -143,4 +69,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v2-build-${GITHUB_RUN_NUMBER}"
-          gh release create "$TAG" CircleTapAuto-v2.apk --title "CircleTapAuto v2 build ${GITHUB_RUN_NUMBER}" --notes "v2: 바깥 원 테두리 8지점 동시 노랑 감지 방식으로 오탐을 줄인 빌드입니다." --latest
+          gh release create "$TAG" CircleTapAuto-v2.apk --title "CircleTapAuto v2 build ${GITHUB_RUN_NUMBER}" --notes "v2: 바깥 원 테두리 8지점 동시 노랑 감지 방식" --latest
