@@ -1,0 +1,73 @@
+name: Build CircleTapAuto APK v4 COLOR
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-apk-v4.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate base Android project
+        shell: bash
+        run: |
+          set -e
+          awk '
+            /- name: Generate Android project/ { in_step=1; next }
+            in_step && /run: \|/ { in_run=1; next }
+            in_run && /^      - name:/ { exit }
+            in_run { sub(/^          /, ""); print }
+          ' .github/workflows/build-apk.yml > /tmp/generate-project.sh
+          bash /tmp/generate-project.sh
+
+      - name: Patch v4 color-change detector
+        shell: bash
+        run: |
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwID0gUGF0aCgiYXBwL3NyYy9tYWluL2phdmEvY29tL2V4YW1wbGUvY2lyY2xldGFwYXV0by9TY3JlZW5DYXB0dXJlU2VydmljZS5rdCIpCnMgPSBwLnJlYWRfdGV4dCgpCgpzdGFydCA9IHMuaW5kZXgoIiAgICBwcml2YXRlIGZ1biBkZXRlY3RBbmRUYXAoaW1hZ2U6IEltYWdlKSB7IikKZW5kID0gcy5pbmRleCgiICAgIHByaXZhdGUgZnVuIGlzWWVsbG93KCIsIHN0YXJ0KQoKbmV3X2RldGVjdCA9ICIiIiAgICBwcml2YXRlIGZ1biBkZXRlY3RBbmRUYXAoaW1hZ2U6IEltYWdlKSB7CiAgICAgICAgdmFsIHdpZHRoID0gaW1hZ2Uud2lkdGgKICAgICAgICB2YWwgaGVpZ2h0ID0gaW1hZ2UuaGVpZ2h0CiAgICAgICAgdmFsIHBsYW5lID0gaW1hZ2UucGxhbmVzLmZpcnN0T3JOdWxsKCkgPzogcmV0dXJuCiAgICAgICAgdmFsIGJ1ZmZlciA9IHBsYW5lLmJ1ZmZlcgogICAgICAgIHZhbCBwaXhlbFN0cmlkZSA9IHBsYW5lLnBpeGVsU3RyaWRlCiAgICAgICAgdmFsIHJvd1N0cmlkZSA9IHBsYW5lLnJvd1N0cmlkZQoKICAgICAgICB2YWwgY3ggPSAod2lkdGggKiAwLjUwZikudG9JbnQoKQogICAgICAgIHZhbCBjeSA9IChoZWlnaHQgKiAwLjUwN2YpLnRvSW50KCkKCiAgICAgICAgLy8gdjQ6IOuqqOyWkeydhCDrrLTsi5ztlZjqs6Ag7KSR7JWZ7J2YICLrj4TrhJsg7JiB7JetIuyXkOyEnCDrhbjrnoAg66m07KCBIOuzgO2ZlOufieydhCDqsJDsp4DtlZzri6QuCiAgICAgICAgLy8g7L2k67O066GcIOybkOydtCDsmrjtiYHrtojtiYHtlbTsoLjrj4Qg67CY7KeA66aEL+qzoOyglSDsp4DsoJDsl5Ag7J2Y7KG07ZWY7KeAIOyViuuKlOuLpC4KICAgICAgICB2YWwgaW5uZXJSID0gKHdpZHRoICogMC4xN2YpCiAgICAgICAgdmFsIG91dGVyUiA9ICh3aWR0aCAqIDAuMzFmKQogICAgICAgIHZhbCBpbm5lclIyID0gaW5uZXJSICogaW5uZXJSCiAgICAgICAgdmFsIG91dGVyUjIgPSBvdXRlclIgKiBvdXRlclIKICAgICAgICB2YWwgc3RlcCA9IG1heCgzLCB3aWR0aCAvIDI0MCkKCiAgICAgICAgdmFyIHllbGxvd0NvdW50ID0gMAogICAgICAgIHZhciB0b3RhbENvdW50ID0gMAoKICAgICAgICB2YXIgeSA9IG1heCgwLCAoY3kgLSBvdXRlclIpLnRvSW50KCkpCiAgICAgICAgdmFsIHlFbmQgPSBtaW4oaGVpZ2h0IC0gMSwgKGN5ICsgb3V0ZXJSKS50b0ludCgpKQoKICAgICAgICB3aGlsZSAoeSA8PSB5RW5kKSB7CiAgICAgICAgICAgIHZhciB4ID0gbWF4KDAsIChjeCAtIG91dGVyUikudG9JbnQoKSkKICAgICAgICAgICAgdmFsIHhFbmQgPSBtaW4od2lkdGggLSAxLCAoY3ggKyBvdXRlclIpLnRvSW50KCkpCgogICAgICAgICAgICB3aGlsZSAoeCA8PSB4RW5kKSB7CiAgICAgICAgICAgICAgICB2YWwgZHggPSAoeCAtIGN4KS50b0Zsb2F0KCkKICAgICAgICAgICAgICAgIHZhbCBkeSA9ICh5IC0gY3kpLnRvRmxvYXQoKQogICAgICAgICAgICAgICAgdmFsIGQyID0gZHggKiBkeCArIGR5ICogZHkKCiAgICAgICAgICAgICAgICBpZiAoZDIgaW4gaW5uZXJSMi4ub3V0ZXJSMikgewogICAgICAgICAgICAgICAgICAgIHRvdGFsQ291bnQrKwogICAgICAgICAgICAgICAgICAgIGlmIChpc1llbGxvdyhidWZmZXIsIHJvd1N0cmlkZSwgcGl4ZWxTdHJpZGUsIHgsIHkpKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIHllbGxvd0NvdW50KysKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB4ICs9IHN0ZXAKICAgICAgICAgICAgfQogICAgICAgICAgICB5ICs9IHN0ZXAKICAgICAgICB9CgogICAgICAgIGlmICh0b3RhbENvdW50ID09IDApIHJldHVybgoKICAgICAgICB2YWwgcmF0aW8gPSB5ZWxsb3dDb3VudC50b0Zsb2F0KCkgLyB0b3RhbENvdW50LnRvRmxvYXQoKQogICAgICAgIHZhbCByaXNlID0gcmF0aW8gLSBwcmV2aW91c1llbGxvd1JhdGlvCiAgICAgICAgcHJldmlvdXNZZWxsb3dSYXRpbyA9IHJhdGlvCgogICAgICAgIHZhbCBub3cgPSBTeXN0ZW1DbG9jay5lbGFwc2VkUmVhbHRpbWUoKQoKICAgICAgICAvLyDsi6TsoJwg64W4656AIOungeydgCDrj4TrhJsg7JiB7Jet7J2YIOydvOyglSDruYTsnKjsnYQg7LCo7KeA7ZWY66m07IScIOyInOqwhOyggeycvOuhnCDtgazqsowg7Kad6rCA7ZWc64ukLgogICAgICAgIC8vIOuwsOqyveyDiS/qtJHqs6Av7J287Iuc7KCB7J24IOuFuOuegCDsoJDsnYAg66m07KCB6rO8IOuzgO2ZlOufiSDsobDqsbTsnLzroZwg6rGw66W464ukLgogICAgICAgIHZhbCBzdHJvbmdZZWxsb3cgPSByYXRpbyA+PSAwLjA1NWYKICAgICAgICB2YWwgc3VkZGVuUmlzZSA9IHJhdGlvID49IDAuMDMwZiAmJiByaXNlID49IDAuMDE4ZgogICAgICAgIHZhbCB5ZWxsb3dOb3cgPSBzdHJvbmdZZWxsb3cgfHwgc3VkZGVuUmlzZQoKICAgICAgICBpZiAoeWVsbG93Tm93ICYmIG5vdyAtIGxhc3RUYXBBdCA+PSAxNDBMKSB7CiAgICAgICAgICAgIGlmIChBdXRvVGFwQWNjZXNzaWJpbGl0eVNlcnZpY2UudGFwU2NyZWVuKGN4LnRvRmxvYXQoKSwgY3kudG9GbG9hdCgpKSkgewogICAgICAgICAgICAgICAgbGFzdFRhcEF0ID0gbm93CiAgICAgICAgICAgICAgICBwcmV2aW91c1llbGxvd1JhdGlvID0gMGYKICAgICAgICAgICAgfQogICAgICAgIH0KICAgIH0KCiIiIgoKcyA9IHNbOnN0YXJ0XSArIG5ld19kZXRlY3QgKyBzW2VuZDpdCgojIOuFuOuekSDtjJDsoJXrj4Qg7Iuk7KCcIOuwneydgCDroIjrqqwv6rOo65OcIOungeyXkCDrp57qsowg7KGw7KCVLgpzdGFydDIgPSBzLmluZGV4KCIgICAgcHJpdmF0ZSBmdW4gaXNZZWxsb3coIikKZW5kMiA9IHMuaW5kZXgoIiAgICBwcml2YXRlIGZ1biBzdG9wQ2FwdHVyZSgpIiwgc3RhcnQyKQoKbmV3X3llbGxvdyA9ICIiIiAgICBwcml2YXRlIGZ1biBpc1llbGxvdygKICAgICAgICBidWZmZXI6IEJ5dGVCdWZmZXIsCiAgICAgICAgcm93U3RyaWRlOiBJbnQsCiAgICAgICAgcGl4ZWxTdHJpZGU6IEludCwKICAgICAgICB4OiBJbnQsCiAgICAgICAgeTogSW50CiAgICApOiBCb29sZWFuIHsKICAgICAgICB2YWwgb2Zmc2V0ID0geSAqIHJvd1N0cmlkZSArIHggKiBwaXhlbFN0cmlkZQogICAgICAgIGlmIChvZmZzZXQgPCAwIHx8IG9mZnNldCArIDIgPj0gYnVmZmVyLmxpbWl0KCkpIHJldHVybiBmYWxzZQoKICAgICAgICB2YWwgciA9IGJ1ZmZlci5nZXQob2Zmc2V0KS50b0ludCgpIGFuZCAweEZGCiAgICAgICAgdmFsIGcgPSBidWZmZXIuZ2V0KG9mZnNldCArIDEpLnRvSW50KCkgYW5kIDB4RkYKICAgICAgICB2YWwgYiA9IGJ1ZmZlci5nZXQob2Zmc2V0ICsgMikudG9JbnQoKSBhbmQgMHhGRgoKICAgICAgICAvLyDsiqTtgazrprDsg7fsnZgg67Cd7J2AIOuFuOuekSDrp4Eg6riw7KSALgogICAgICAgIC8vIO2MjOuegC/tnbDsg4kv7ZqM7IOJ7J2AIOygnOyZuO2VmOqzoCwg7KO87ZmpL+qwiOyDiSDrsLDqsr3rs7Tri6QgR+qwgCDstqnrtoTtnogg64aS7J2AIOyDieunjCDtl4jsmqkuCiAgICAgICAgcmV0dXJuIHIgPj0gMjA1ICYmCiAgICAgICAgICAgIGcgPj0gMTcwICYmCiAgICAgICAgICAgIGIgPD0gMTM1ICYmCiAgICAgICAgICAgIChyICsgZykgPj0gNDA1ICYmCiAgICAgICAgICAgIChyIC0gYikgPj0gODUgJiYKICAgICAgICAgICAgKGcgLSBiKSA+PSA2NSAmJgogICAgICAgICAgICBnICogMTAwID49IHIgKiA3MgogICAgfQoKIiIiCgpzID0gc1s6c3RhcnQyXSArIG5ld195ZWxsb3cgKyBzW2VuZDI6XQoKIyDsg4Htg5wg67OA7IiYIOy2lOqwgC4geWVsbG93TGF0Y2hlZOuKlCDrjZQg7J207IOBIOyCrOyaqe2VmOyngCDslYrsnYwuCmlmICJwcml2YXRlIHZhciBwcmV2aW91c1llbGxvd1JhdGlvIiBub3QgaW4gczoKICAgIHMgPSBzLnJlcGxhY2UoCiAgICAgICAgIiAgICAgICAgICAgICAgcHJpdmF0ZSB2YXIgbGFzdEZyYW1lQXQgPSAwTCIsCiAgICAgICAgIiAgICAgICAgICAgICAgcHJpdmF0ZSB2YXIgbGFzdEZyYW1lQXQgPSAwTFxuICAgICAgICAgICAgICBwcml2YXRlIHZhciBwcmV2aW91c1llbGxvd1JhdGlvID0gMGYiCiAgICApCgpwLndyaXRlX3RleHQocyk=' | base64 -d > /tmp/patch_v4.py
+          python /tmp/patch_v4.py
+          grep -n "previousYellowRatio\|strongYellow\|suddenRise" app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Copy APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CircleTapAuto-v4-COLOR.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CircleTapAuto-v4-COLOR-APK
+          path: CircleTapAuto-v4-COLOR.apk
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v4-color-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" CircleTapAuto-v4-COLOR.apk --title "CircleTapAuto v4 COLOR ${GITHUB_RUN_NUMBER}" --notes "v4: 원 모양 무시, 중앙 도넛 영역의 밝은 노랑 면적 + 프레임간 증가량으로 감지" --latest
