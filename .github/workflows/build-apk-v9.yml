@@ -1,0 +1,404 @@
+name: Build CircleTapAuto APK v9 FINAL
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-apk-v9.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate base Android project
+        shell: bash
+        run: |
+          set -e
+          awk '
+            /- name: Generate Android project/ { in_step=1; next }
+            in_step && /run: \|/ { in_run=1; next }
+            in_run && /^      - name:/ { exit }
+            in_run { sub(/^          /, ""); print }
+          ' .github/workflows/build-apk.yml > /tmp/generate-project.sh
+          bash /tmp/generate-project.sh
+
+      - name: Replace ScreenCaptureService completely
+        shell: bash
+        run: |
+          cat > app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt <<'EOF_KT'
+          package com.example.circletapauto
+
+          import android.app.Activity
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.Image
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.HandlerThread
+          import android.os.IBinder
+          import android.os.SystemClock
+          import android.util.DisplayMetrics
+          import android.view.WindowManager
+          import androidx.core.app.NotificationCompat
+          import java.nio.ByteBuffer
+          import kotlin.math.max
+          import kotlin.math.min
+
+          class ScreenCaptureService : Service() {
+
+              private var projection: MediaProjection? = null
+              private var virtualDisplay: VirtualDisplay? = null
+              private var imageReader: ImageReader? = null
+              private var workerThread: HandlerThread? = null
+              private var workerHandler: Handler? = null
+
+              private var lastTapAt = 0L
+              private var armed = true
+
+              override fun onCreate() {
+                  super.onCreate()
+                  createNotificationChannel()
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      ACTION_STOP -> {
+                          stopCapture()
+                          stopSelf()
+                          return START_NOT_STICKY
+                      }
+                      ACTION_START -> startCapture(intent)
+                  }
+                  return START_NOT_STICKY
+              }
+
+              @Suppress("DEPRECATION")
+              private fun startCapture(intent: Intent) {
+                  val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setSmallIcon(android.R.drawable.ic_menu_view)
+                      .setContentTitle("Circle Tap Auto")
+                      .setContentText("노란색 타이밍 감지 중")
+                      .setOngoing(true)
+                      .build()
+
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(
+                          NOTIFICATION_ID,
+                          notification,
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                      )
+                  } else {
+                      startForeground(NOTIFICATION_ID, notification)
+                  }
+
+                  if (projection != null) return
+
+                  val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+                  val resultData: Intent? = if (Build.VERSION.SDK_INT >= 33) {
+                      intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+                  } else {
+                      intent.getParcelableExtra(EXTRA_RESULT_DATA)
+                  }
+
+                  if (resultCode != Activity.RESULT_OK || resultData == null) {
+                      stopSelf()
+                      return
+                  }
+
+                  val metrics = getScreenMetrics()
+                  val width = metrics[0]
+                  val height = metrics[1]
+                  val densityDpi = metrics[2]
+
+                  imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+
+                  workerThread = HandlerThread("YellowDetector").apply { start() }
+                  workerHandler = Handler(workerThread!!.looper)
+
+                  val manager = getSystemService(MediaProjectionManager::class.java)
+                  projection = manager.getMediaProjection(resultCode, resultData)
+
+                  projection?.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() {
+                          stopCapture()
+                          stopSelf()
+                      }
+                  }, workerHandler)
+
+                  virtualDisplay = projection?.createVirtualDisplay(
+                      "CircleTapCapture",
+                      width,
+                      height,
+                      densityDpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                      imageReader!!.surface,
+                      null,
+                      workerHandler
+                  )
+
+                  imageReader?.setOnImageAvailableListener({ reader ->
+                      reader.acquireLatestImage()?.use { image ->
+                          detectAndTap(image)
+                      }
+                  }, workerHandler)
+              }
+
+              private fun detectAndTap(image: Image) {
+                  val width = image.width
+                  val height = image.height
+                  val plane = image.planes.firstOrNull() ?: return
+                  val buffer = plane.buffer
+                  val pixelStride = plane.pixelStride
+                  val rowStride = plane.rowStride
+
+                  val cx = (width * 0.50f).toInt()
+                  val cy = (height * 0.507f).toInt()
+
+                  // v9 FINAL:
+                  // 실제 783px 스크린샷을 다시 측정했다.
+                  // 성공 타이밍에서 흰 경계는 약 r=195~202, r=231~238px이고
+                  // 노란 겹침 영역은 그 사이와 주변(r≈185~242)에 넓게 생긴다.
+                  // v8의 0.255W(약 200px) 한 지점 고정 감시는 틀렸다.
+                  //
+                  // 이번에는 원의 "한 반지름"을 찍지 않고,
+                  // 목표 원이 존재하는 0.235W~0.315W 띠 전체를 48방향으로 검사한다.
+                  // 배경은 검사 대상에서 제외한다.
+                  val sectors = 48
+                  val minR = (width * 0.235f).toInt()
+                  val maxR = (width * 0.315f).toInt()
+                  val radialStep = 4
+
+                  var yellowSectors = 0
+                  var strongYellowSectors = 0
+                  var whiteSectors = 0
+
+                  for (i in 0 until sectors) {
+                      val angle = Math.PI * 2.0 * i.toDouble() / sectors.toDouble()
+                      val ca = kotlin.math.cos(angle).toFloat()
+                      val sa = kotlin.math.sin(angle).toFloat()
+
+                      var bestYellow = 0
+                      var hasWhite = false
+                      var r = minR
+
+                      while (r <= maxR) {
+                          val x = (cx + ca * r).toInt()
+                          val y = (cy + sa * r).toInt()
+
+                          if (x in 0 until width && y in 0 until height) {
+                              val rgb = getRgb(buffer, rowStride, pixelStride, x, y)
+                              if (rgb != null) {
+                                  val rr = rgb[0]
+                                  val gg = rgb[1]
+                                  val bb = rgb[2]
+
+                                  if (isWhiteRing(rr, gg, bb)) {
+                                      hasWhite = true
+                                  }
+
+                                  val score = yellowOverlapScore(rr, gg, bb)
+                                  if (score > bestYellow) bestYellow = score
+                              }
+                          }
+                          r += radialStep
+                      }
+
+                      if (hasWhite) whiteSectors++
+                      if (bestYellow >= 72) yellowSectors++
+                      if (bestYellow >= 100) strongYellowSectors++
+
+                      // 실제 성공 화면은 노란 띠가 둘레에 넓게 나타난다.
+                      // 충분한 방향에서 잡히는 즉시 나머지 계산을 생략하고 탭.
+                      if (yellowSectors >= 5 && strongYellowSectors >= 2) break
+                  }
+
+                  val now = SystemClock.elapsedRealtime()
+
+                  // 흰 원이 다시 충분히 나타난 프레임에서 다음 라운드 준비.
+                  if (whiteSectors >= 8 && yellowSectors <= 1) {
+                      armed = true
+                  }
+
+                  val overlapNow =
+                      yellowSectors >= 5 &&
+                      strongYellowSectors >= 2
+
+                  if (overlapNow && armed && now - lastTapAt >= 35L) {
+                      if (AutoTapAccessibilityService.tapScreen(
+                              cx.toFloat(),
+                              cy.toFloat()
+                          )
+                      ) {
+                          lastTapAt = now
+                          armed = false
+                      }
+                  }
+              }
+
+              private fun getRgb(
+                  buffer: ByteBuffer,
+                  rowStride: Int,
+                  pixelStride: Int,
+                  x: Int,
+                  y: Int
+              ): IntArray? {
+                  val offset = y * rowStride + x * pixelStride
+                  if (offset < 0 || offset + 2 >= buffer.limit()) return null
+
+                  return intArrayOf(
+                      buffer.get(offset).toInt() and 0xFF,
+                      buffer.get(offset + 1).toInt() and 0xFF,
+                      buffer.get(offset + 2).toInt() and 0xFF
+                  )
+              }
+
+              private fun isWhiteRing(r: Int, g: Int, b: Int): Boolean {
+                  val maxC = max(r, max(g, b))
+                  val minC = min(r, min(g, b))
+                  return minC >= 210 &&
+                      maxC >= 230 &&
+                      (maxC - minC) <= 50
+              }
+
+              private fun yellowOverlapScore(r: Int, g: Int, b: Int): Int {
+                  // 실제 성공 스크린샷의 겹침 띠 예:
+                  // (229,222,116), (227,225,112), (223,223,113), (217,216,90)
+                  // 공통점은 R/G가 함께 높고 B가 약 70~130 낮다는 것.
+                  if (r < 180 || g < 175) return 0
+                  if (kotlin.math.abs(r - g) > 38) return 0
+
+                  val blueDrop = min(r, g) - b
+                  if (blueDrop < 55) return 0
+
+                  return blueDrop
+              }
+
+              private fun getScreenMetrics(): IntArray {
+                  return if (Build.VERSION.SDK_INT >= 30) {
+                      val wm = getSystemService(WindowManager::class.java)
+                      val bounds = wm.currentWindowMetrics.bounds
+                      val dm = resources.displayMetrics
+                      intArrayOf(bounds.width(), bounds.height(), dm.densityDpi)
+                  } else {
+                      @Suppress("DEPRECATION")
+                      val display = (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay
+                      val metrics = DisplayMetrics()
+                      @Suppress("DEPRECATION")
+                      display.getRealMetrics(metrics)
+                      intArrayOf(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
+                  }
+              }
+
+              private fun stopCapture() {
+                  try {
+                      imageReader?.setOnImageAvailableListener(null, null)
+                  } catch (_: Exception) {
+                  }
+
+                  imageReader?.close()
+                  imageReader = null
+
+                  virtualDisplay?.release()
+                  virtualDisplay = null
+
+                  projection?.stop()
+                  projection = null
+
+                  workerThread?.quitSafely()
+                  workerThread = null
+                  workerHandler = null
+
+                  armed = true
+              }
+
+              override fun onDestroy() {
+                  stopCapture()
+                  super.onDestroy()
+              }
+
+              private fun createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val channel = NotificationChannel(
+                          CHANNEL_ID,
+                          "Circle Tap Auto",
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                      getSystemService(NotificationManager::class.java)
+                          .createNotificationChannel(channel)
+                  }
+              }
+
+              companion object {
+                  const val ACTION_START = "com.example.circletapauto.START"
+                  const val ACTION_STOP = "com.example.circletapauto.STOP"
+                  const val EXTRA_RESULT_CODE = "resultCode"
+                  const val EXTRA_RESULT_DATA = "resultData"
+
+                  private const val CHANNEL_ID = "circle_tap_auto"
+                  private const val NOTIFICATION_ID = 1
+              }
+          }
+          EOF_KT
+
+      - name: Verify generated Kotlin
+        run: |
+          grep -n "v9 FINAL\|overlapNow\|yellowOverlapScore\|minR" \
+            app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Copy APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CircleTapAuto-v9-FINAL.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CircleTapAuto-v9-FINAL-APK
+          path: CircleTapAuto-v9-FINAL.apk
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v9-final-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" CircleTapAuto-v9-FINAL.apk \
+            --title "CircleTapAuto v9 FINAL ${GITHUB_RUN_NUMBER}" \
+            --notes "v9 FINAL: 실제 성공 스크린샷에서 측정한 r=185~247px 원 띠 전체를 48방향 감시. 고정 반지름 오류 제거, 노란 겹침 영역 즉시 탭, 35ms 쿨다운." \
+            --latest
