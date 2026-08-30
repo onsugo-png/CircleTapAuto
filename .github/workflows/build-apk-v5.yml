@@ -1,0 +1,409 @@
+name: Build CircleTapAuto APK v5 CONTRAST
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-apk-v5.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate base Android project
+        shell: bash
+        run: |
+          set -e
+          awk '
+            /- name: Generate Android project/ { in_step=1; next }
+            in_step && /run: \|/ { in_run=1; next }
+            in_run && /^      - name:/ { exit }
+            in_run { sub(/^          /, ""); print }
+          ' .github/workflows/build-apk.yml > /tmp/generate-project.sh
+          bash /tmp/generate-project.sh
+
+      - name: Replace ScreenCaptureService completely
+        shell: bash
+        run: |
+          cat > app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt <<'EOF_KT'
+          package com.example.circletapauto
+
+          import android.app.Activity
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.Image
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.HandlerThread
+          import android.os.IBinder
+          import android.os.SystemClock
+          import android.util.DisplayMetrics
+          import android.view.WindowManager
+          import androidx.core.app.NotificationCompat
+          import java.nio.ByteBuffer
+          import kotlin.math.max
+          import kotlin.math.min
+
+          class ScreenCaptureService : Service() {
+
+              private var projection: MediaProjection? = null
+              private var virtualDisplay: VirtualDisplay? = null
+              private var imageReader: ImageReader? = null
+              private var workerThread: HandlerThread? = null
+              private var workerHandler: Handler? = null
+
+              private var lastTapAt = 0L
+              private var lastFrameAt = 0L
+
+              override fun onCreate() {
+                  super.onCreate()
+                  createNotificationChannel()
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      ACTION_STOP -> {
+                          stopCapture()
+                          stopSelf()
+                          return START_NOT_STICKY
+                      }
+                      ACTION_START -> startCapture(intent)
+                  }
+                  return START_NOT_STICKY
+              }
+
+              @Suppress("DEPRECATION")
+              private fun startCapture(intent: Intent) {
+                  val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setSmallIcon(android.R.drawable.ic_menu_view)
+                      .setContentTitle("Circle Tap Auto")
+                      .setContentText("노란색 타이밍 감지 중")
+                      .setOngoing(true)
+                      .build()
+
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(
+                          NOTIFICATION_ID,
+                          notification,
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                      )
+                  } else {
+                      startForeground(NOTIFICATION_ID, notification)
+                  }
+
+                  if (projection != null) return
+
+                  val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+                  val resultData: Intent? = if (Build.VERSION.SDK_INT >= 33) {
+                      intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+                  } else {
+                      intent.getParcelableExtra(EXTRA_RESULT_DATA)
+                  }
+
+                  if (resultCode != Activity.RESULT_OK || resultData == null) {
+                      stopSelf()
+                      return
+                  }
+
+                  val metrics = getScreenMetrics()
+                  val width = metrics[0]
+                  val height = metrics[1]
+                  val densityDpi = metrics[2]
+
+                  imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+
+                  workerThread = HandlerThread("YellowDetector").apply { start() }
+                  workerHandler = Handler(workerThread!!.looper)
+
+                  val manager = getSystemService(MediaProjectionManager::class.java)
+                  projection = manager.getMediaProjection(resultCode, resultData)
+
+                  projection?.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() {
+                          stopCapture()
+                          stopSelf()
+                      }
+                  }, workerHandler)
+
+                  virtualDisplay = projection?.createVirtualDisplay(
+                      "CircleTapCapture",
+                      width,
+                      height,
+                      densityDpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                      imageReader!!.surface,
+                      null,
+                      workerHandler
+                  )
+
+                  imageReader?.setOnImageAvailableListener({ reader ->
+                      val now = SystemClock.elapsedRealtime()
+
+                      // 약 60fps. 지나치게 오래된 프레임은 버리고 항상 최신 화면만 사용.
+                      if (now - lastFrameAt < 14L) {
+                          reader.acquireLatestImage()?.close()
+                          return@setOnImageAvailableListener
+                      }
+                      lastFrameAt = now
+
+                      reader.acquireLatestImage()?.use { image ->
+                          detectAndTap(image)
+                      }
+                  }, workerHandler)
+              }
+
+              private fun detectAndTap(image: Image) {
+                  val width = image.width
+                  val height = image.height
+                  val plane = image.planes.firstOrNull() ?: return
+                  val buffer = plane.buffer
+                  val pixelStride = plane.pixelStride
+                  val rowStride = plane.rowStride
+
+                  val cx = (width * 0.50f).toInt()
+                  val cy = (height * 0.507f).toInt()
+
+                  // v5 CONTRAST:
+                  // 배경색 자체가 노랑/황토색으로 변하는 오탐을 막기 위해,
+                  // "노란색인가?"뿐 아니라 같은 방향의 주변 배경보다
+                  // 확실히 밝은 링인지까지 비교한다.
+                  //
+                  // 콤보 시 원이 울퉁불퉁해지므로 한 반지름에 고정하지 않고
+                  // 0.20~0.31W 범위에서 각 방향별 가장 강한 밝은 노랑을 찾는다.
+                  val minR = width * 0.20f
+                  val maxR = width * 0.31f
+                  val radiusStep = max(3, width / 180)
+                  val sectors = 48
+
+                  var goodSectors = 0
+                  var strongSectors = 0
+
+                  for (i in 0 until sectors) {
+                      val angle = (Math.PI * 2.0 * i.toDouble()) / sectors.toDouble()
+                      val cosA = kotlin.math.cos(angle).toFloat()
+                      val sinA = kotlin.math.sin(angle).toFloat()
+
+                      var sectorBest = 0
+                      var r = minR.toInt()
+
+                      while (r <= maxR.toInt()) {
+                          val x = (cx + cosA * r).toInt()
+                          val y = (cy + sinA * r).toInt()
+
+                          if (x in 0 until width && y in 0 until height) {
+                              val rgb = getRgb(buffer, rowStride, pixelStride, x, y)
+
+                              if (rgb != null && isBrightYellow(rgb[0], rgb[1], rgb[2])) {
+                                  // 링 후보의 안쪽/바깥쪽 배경을 같은 각도에서 비교.
+                                  // 배경 전체가 황토/노랑이어도 이 대비 조건을 통과하기 어렵다.
+                                  val offset = max(12, width / 55)
+                                  val innerR = max(0, r - offset)
+                                  val outerR = r + offset
+
+                                  val ix = (cx + cosA * innerR).toInt()
+                                  val iy = (cy + sinA * innerR).toInt()
+                                  val ox = (cx + cosA * outerR).toInt()
+                                  val oy = (cy + sinA * outerR).toInt()
+
+                                  val inner = if (ix in 0 until width && iy in 0 until height)
+                                      getRgb(buffer, rowStride, pixelStride, ix, iy) else null
+                                  val outer = if (ox in 0 until width && oy in 0 until height)
+                                      getRgb(buffer, rowStride, pixelStride, ox, oy) else null
+
+                                  if (inner != null && outer != null) {
+                                      val ringLum = luminance(rgb[0], rgb[1], rgb[2])
+                                      val innerLum = luminance(inner[0], inner[1], inner[2])
+                                      val outerLum = luminance(outer[0], outer[1], outer[2])
+                                      val bgLum = (innerLum + outerLum) / 2
+
+                                      val contrast = ringLum - bgLum
+                                      val yellowStrength =
+                                          (rgb[0] - rgb[2]) + (rgb[1] - rgb[2])
+
+                                      val score = contrast + yellowStrength / 5
+                                      if (score > sectorBest) sectorBest = score
+                                  }
+                              }
+                          }
+                          r += radiusStep
+                      }
+
+                      if (sectorBest >= 58) goodSectors++
+                      if (sectorBest >= 78) strongSectors++
+
+                      // 충분한 둘레 구간에서 동시에 대비가 확인되면 바로 종료.
+                      if (goodSectors >= 9 && strongSectors >= 4) break
+                  }
+
+                  val yellowRing = goodSectors >= 9 && strongSectors >= 4
+                  val now = SystemClock.elapsedRealtime()
+
+                  if (yellowRing && now - lastTapAt >= 120L) {
+                      if (AutoTapAccessibilityService.tapScreen(cx.toFloat(), cy.toFloat())) {
+                          lastTapAt = now
+                      }
+                  }
+              }
+
+              private fun getRgb(
+                  buffer: ByteBuffer,
+                  rowStride: Int,
+                  pixelStride: Int,
+                  x: Int,
+                  y: Int
+              ): IntArray? {
+                  val offset = y * rowStride + x * pixelStride
+                  if (offset < 0 || offset + 2 >= buffer.limit()) return null
+
+                  return intArrayOf(
+                      buffer.get(offset).toInt() and 0xFF,
+                      buffer.get(offset + 1).toInt() and 0xFF,
+                      buffer.get(offset + 2).toInt() and 0xFF
+                  )
+              }
+
+              private fun isBrightYellow(r: Int, g: Int, b: Int): Boolean {
+                  // 사용자가 제공한 실제 성공 타이밍 스크린샷의
+                  // 밝은 레몬/골드 링을 겨냥. 배경의 어두운 황토색은 제외.
+                  return r >= 215 &&
+                      g >= 175 &&
+                      b <= 155 &&
+                      (r + g) >= 415 &&
+                      (r - b) >= 70 &&
+                      (g - b) >= 45 &&
+                      g * 100 >= r * 70
+              }
+
+              private fun luminance(r: Int, g: Int, b: Int): Int {
+                  return (r * 299 + g * 587 + b * 114) / 1000
+              }
+
+              private fun getScreenMetrics(): IntArray {
+                  return if (Build.VERSION.SDK_INT >= 30) {
+                      val wm = getSystemService(WindowManager::class.java)
+                      val bounds = wm.currentWindowMetrics.bounds
+                      val dm = resources.displayMetrics
+                      intArrayOf(bounds.width(), bounds.height(), dm.densityDpi)
+                  } else {
+                      @Suppress("DEPRECATION")
+                      val display = (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay
+                      val metrics = DisplayMetrics()
+                      @Suppress("DEPRECATION")
+                      display.getRealMetrics(metrics)
+                      intArrayOf(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
+                  }
+              }
+
+              private fun stopCapture() {
+                  try {
+                      imageReader?.setOnImageAvailableListener(null, null)
+                  } catch (_: Exception) {
+                  }
+
+                  imageReader?.close()
+                  imageReader = null
+
+                  virtualDisplay?.release()
+                  virtualDisplay = null
+
+                  projection?.stop()
+                  projection = null
+
+                  workerThread?.quitSafely()
+                  workerThread = null
+                  workerHandler = null
+
+                  lastFrameAt = 0L
+              }
+
+              override fun onDestroy() {
+                  stopCapture()
+                  super.onDestroy()
+              }
+
+              private fun createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val channel = NotificationChannel(
+                          CHANNEL_ID,
+                          "Circle Tap Auto",
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                      getSystemService(NotificationManager::class.java)
+                          .createNotificationChannel(channel)
+                  }
+              }
+
+              companion object {
+                  const val ACTION_START = "com.example.circletapauto.START"
+                  const val ACTION_STOP = "com.example.circletapauto.STOP"
+                  const val EXTRA_RESULT_CODE = "resultCode"
+                  const val EXTRA_RESULT_DATA = "resultData"
+
+                  private const val CHANNEL_ID = "circle_tap_auto"
+                  private const val NOTIFICATION_ID = 1
+              }
+          }
+          EOF_KT
+
+      - name: Verify generated Kotlin
+        run: |
+          grep -n "v5 CONTRAST\|goodSectors\|isBrightYellow\|luminance" \
+            app/src/main/java/com/example/circletapauto/ScreenCaptureService.kt
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Copy APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CircleTapAuto-v5-CONTRAST.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CircleTapAuto-v5-CONTRAST-APK
+          path: CircleTapAuto-v5-CONTRAST.apk
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v5-contrast-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" CircleTapAuto-v5-CONTRAST.apk \
+            --title "CircleTapAuto v5 CONTRAST ${GITHUB_RUN_NUMBER}" \
+            --notes "v5 CONTRAST: 노란 링 자체 색 + 같은 방향 안/밖 배경과의 밝기 대비를 함께 검사. 배경색 변화 오탐 방지, 울퉁불퉁한 콤보 링 대응." \
+            --latest
